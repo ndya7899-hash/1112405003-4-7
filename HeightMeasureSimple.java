@@ -4,86 +4,90 @@ import javax.imageio.ImageIO;
 
 public class HeightMeasureSimple {
 
-    static final double REF_HEIGHT_CM = 180.0;
+
+    static final double REF_HEIGHT_CM = 180.0; 
 
     public static void main(String[] args) {
         try {
-            // 根據你的 VS Code 截圖修正檔名
-            String img1Path = "ca2a26c2-a565-4e14-80ee-17abd28e8a66.jpg";
-            String img2Path = "07b1282e-9dde-4b63-8508-a94198adad88.jpg";
+            String[] imgPaths = {"pic1.jpg", "pic2.jpg", "pic3.jpg", "pic4.jpg"};
+            
+            for (int i = 0; i < imgPaths.length; i++) {
+                File f = new File(imgPaths[i]);
+                if (!f.exists()) {
+                    System.out.println("找不到檔案: " + imgPaths[i]);
+                    continue;
+                }
+                BufferedImage img = ImageIO.read(f);
+                
+                // 設定搜尋範圍 (ROI): 需要根據每張圖黑衣人的位置微調
+                // Rect 格式: (x, y, 寬度, 高度)
+                Rect refROI;    // Just Do It 同學的位置
+                Rect targetROI; // 目標同學的位置
 
-            BufferedImage img1 = ImageIO.read(new File(img1Path));
-            BufferedImage img2 = ImageIO.read(new File(img2Path));
+                if (i == 0) { // 照片 1
+                    refROI = new Rect(550, 500, 300, 1000); 
+                    targetROI = new Rect(300, 500, 250, 1000);
+                } else if (i == 1) { // 照片 2
+                    refROI = new Rect(600, 550, 250, 950);
+                    targetROI = new Rect(400, 550, 200, 950);
+                } else { // 照片 3 & 4 (大約值，可微調)
+                    refROI = new Rect(500, 500, 300, 1000);
+                    targetROI = new Rect(100, 500, 300, 1000);
+                }
 
-            if (img1 == null || img2 == null) {
-                System.out.println("讀不到圖片，請確認檔名是否與左側清單一致！");
-                return;
+                analyzeOnePhoto(img, refROI, targetROI, "照片 " + (i + 1));
             }
 
-            // 第一張圖 (左右站立)
-            Rect img1RefROI = new Rect(700, 500, 300, 1000); 
-            Rect img1TargetROI = new Rect(200, 500, 300, 1000); 
-            Result r1 = analyzeOnePhoto(img1, img1RefROI, img1TargetROI, "第一張照片");
-
-            // 第二張圖 (前後站立)
-            Rect img2RefROI = new Rect(600, 500, 300, 1000); 
-            Rect img2TargetROI = new Rect(150, 500, 350, 1100); 
-            Result r2 = analyzeOnePhoto(img2, img2RefROI, img2TargetROI, "第二張照片");
-
-            System.out.println("\n===== 最終計算結果 =====");
-            System.out.printf("%s 目標身高：%.2f cm\n", r1.name, r1.targetHeightCm);
-            System.out.printf("%s 目標身高：%.2f cm\n", r2.name, r2.targetHeightCm);
-
-        } catch (java.io.IOException e) {
-            System.out.println("讀取圖片失敗");
         } catch (Exception e) {
-            System.out.println("程式執行出錯: " + e.getMessage());
+            System.out.println("執行失敗: " + e.getMessage());
         }
     }
 
-    static Result analyzeOnePhoto(BufferedImage image, Rect refROI, Rect targetROI, String name) {
-        int vanishY = findVanishingLineY(image);
-        PersonBox refBox = detectPersonInROI(image, refROI);
-        PersonBox targetBox = detectPersonInROI(image, targetROI);
+    static void analyzeOnePhoto(BufferedImage image, Rect refROI, Rect targetROI, String label) {
+        // 1. 估計消失線 (根據天花板結構)
+        int vanishY = image.getHeight() / 3; 
+
+        // 2. 偵測人物 Y 軸邊界
+        PersonBox refBox = detectPerson(image, refROI);
+        PersonBox targetBox = detectPerson(image, targetROI);
 
         if (refBox == null || targetBox == null) {
-            System.out.println(name + " 偵測人物失敗");
-            return new Result(vanishY, 0, name);
+            System.out.println(label + ": 偵測失敗");
+            return;
         }
 
-        int refPixelHeight = refBox.bottomY - refBox.topY;
-        int targetPixelHeight = targetBox.bottomY - targetBox.topY;
+        // 3. 計算像素高度
+        int hRef = refBox.bottom - refBox.top;
+        int hTarget = targetBox.bottom - targetBox.top;
 
-        double refCorrected = (double) refPixelHeight / Math.max(1, Math.abs(refBox.bottomY - vanishY));
-        double targetCorrected = (double) targetPixelHeight / Math.max(1, Math.abs(targetBox.bottomY - vanishY));
+        // 4. 根據消失點距離進行補償 (Pinhole Camera Model)
+        // 距離消失線越遠，代表在現實中越靠近相機
+        double distRef = Math.abs(refBox.bottom - vanishY);
+        double distTarget = Math.abs(targetBox.bottom - vanishY);
 
-        double targetHeight = (targetCorrected / refCorrected) * REF_HEIGHT_CM;
-        return new Result(vanishY, targetHeight, name);
+        double ratioRef = (double) hRef / distRef;
+        double ratioTarget = (double) hTarget / distTarget;
+
+        // 5. 換算身高
+        double finalHeight = (ratioTarget / ratioRef) * REF_HEIGHT_CM;
+
+        System.out.printf("%s -> 基準(180cm)像素:%d, 目標像素:%d, 計算身高:%.2f cm\n", 
+                          label, hRef, hTarget, finalHeight);
     }
 
-    static int findVanishingLineY(BufferedImage image) {
-        int height = image.getHeight();
-        return height / 3; // 預設一個大約的消失線位置
-    }
-
-    static PersonBox detectPersonInROI(BufferedImage image, Rect roi) {
-        int top = -1, bottom = -1;
-        for (int y = 0; y < roi.h; y++) {
-            int py = roi.y + y;
-            if (py >= image.getHeight()) break;
-            for (int x = 0; x < roi.w; x++) {
-                int px = roi.x + x;
-                if (px >= image.getWidth()) break;
-                int rgb = image.getRGB(px, py);
+    static PersonBox detectPerson(BufferedImage img, Rect r) {
+        int t = -1, b = -1;
+        for (int y = r.y; y < r.y + r.h && y < img.getHeight(); y++) {
+            for (int x = r.x; x < r.x + r.w && x < img.getWidth(); x++) {
+                int rgb = img.getRGB(x, y);
                 int brightness = (((rgb >> 16) & 0xff) + ((rgb >> 8) & 0xff) + (rgb & 0xff)) / 3;
-                if (brightness < 120) { 
-                    if (top == -1) top = py;
-                    bottom = py;
+                if (brightness < 110) { // 偵測深色衣物/頭髮
+                    if (t == -1) t = y;
+                    b = y;
                 }
             }
         }
-        if (top == -1) return null;
-        return new PersonBox(roi.x, top, roi.x + roi.w, bottom);
+        return (t == -1) ? null : new PersonBox(t, b);
     }
 
     static class Rect {
@@ -92,12 +96,7 @@ public class HeightMeasureSimple {
     }
 
     static class PersonBox {
-        int leftX, topY, rightX, bottomY;
-        PersonBox(int lx, int ty, int rx, int by) { this.leftX = lx; this.topY = ty; this.rightX = rx; this.bottomY = by; }
-    }
-
-    static class Result {
-        int vanishY; double targetHeightCm; String name;
-        Result(int v, double h, String n) { this.vanishY = v; this.targetHeightCm = h; this.name = n; }
+        int top, bottom;
+        PersonBox(int t, int b) { this.top = t; this.bottom = b; }
     }
 }
